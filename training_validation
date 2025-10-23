@@ -1,0 +1,138 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+import pickle
+from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input
+from tensorflow.keras.models import Model
+
+# -----------------------------
+# 1️⃣ Load Models
+# -----------------------------
+transfer_model = load_model("/content/transfer_learning_model.h5")
+feature_model  = load_model("/content/feature_extraction_model.h5")
+caption_model  = load_model("/content/image_caption_generator_model.h5")
+
+# Load tokenizer for caption generator
+with open("/content/tokenizer.pkl", 'rb') as f:
+    tokenizer = pickle.load(f)
+
+# Max caption length (same as training)
+max_length = 10  # replace with your value
+
+# Class names
+class_names = ['CNV', 'DME', 'DRUSEN', 'NORMAL']  # match your training order
+
+# -----------------------------
+# 2️⃣ Prepare Test Dataset
+# -----------------------------
+test_dir = "/content/Kermany2018/test"  # update path if needed
+IMG_SIZE = (224, 224)
+BATCH_SIZE = 32
+
+test_datagen = ImageDataGenerator(rescale=1./255)
+test_gen = test_datagen.flow_from_directory(
+    test_dir,
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    shuffle=False
+)
+
+# -----------------------------
+# 3️⃣ Validate Classification Models
+# -----------------------------
+# Transfer Learning Model
+loss_t, acc_t = transfer_model.evaluate(test_gen)
+print(f"🧠 Transfer Learning Model - Loss: {loss_t:.4f}, Accuracy: {acc_t*100:.2f}%")
+
+# Feature Extraction Model
+loss_f, acc_f = feature_model.evaluate(test_gen)
+print(f"🧩 Feature Extraction Model - Loss: {loss_f:.4f}, Accuracy: {acc_f*100:.2f}%")
+
+# -----------------------------
+# 4️⃣ Predict and Display Images
+# -----------------------------
+def show_image(img_path):
+    img = load_img(img_path, target_size=(224,224))
+    plt.imshow(img)
+    plt.axis('off')
+    plt.show()
+
+def preprocess_image(img_path, target_size=(224,224)):
+    img = load_img(img_path, target_size=target_size)
+    img = img_to_array(img)/255.0
+    img = np.expand_dims(img, axis=0)
+    return img
+
+# Load InceptionV3 for caption feature extraction
+base_model = InceptionV3(weights='imagenet')
+model_incep = Model(base_model.input, base_model.layers[-2].output)
+
+def generate_caption(model, tokenizer, photo, max_length):
+    in_text = 'startseq'
+    for i in range(max_length):
+        sequence = tokenizer.texts_to_sequences([in_text])[0]
+        sequence = pad_sequences([sequence], maxlen=max_length)
+        yhat = np.argmax(model.predict([photo, sequence], verbose=0))
+        word = None
+        for w, index in tokenizer.word_index.items():
+            if index == yhat:
+                word = w
+                break
+        if word is None:
+            break
+        in_text += ' ' + word
+        if word == 'endseq':
+            break
+    return in_text
+
+# Test first 5 images
+test_images = []
+for subfolder in os.listdir(test_dir):
+    folder_path = os.path.join(test_dir, subfolder)
+    for img_file in os.listdir(folder_path)[:2]:  # 2 per class for 4 classes = 8 images
+        test_images.append(os.path.join(folder_path, img_file))
+
+for img_path in test_images:
+    print("Image:", os.path.basename(img_path))
+    show_image(img_path)
+    
+    # Transfer Learning Prediction
+    img = preprocess_image(img_path)
+    pred_t = transfer_model.predict(img)
+    pred_label_t = class_names[np.argmax(pred_t)]
+    print("🧠 Transfer Learning Prediction:", pred_label_t)
+    
+    # Feature Extraction Prediction
+    pred_f = feature_model.predict(img)
+    pred_label_f = class_names[np.argmax(pred_f)]
+    print("🧩 Feature Extraction Prediction:", pred_label_f)
+    
+    # Image Caption Generator Prediction
+    img_incep = load_img(img_path, target_size=(299,299))
+    img_incep = img_to_array(img_incep)
+    img_incep = np.expand_dims(img_incep, axis=0)
+    img_incep = preprocess_input(img_incep)
+    photo_feature = model_incep.predict(img_incep, verbose=0)
+    
+    caption = generate_caption(caption_model, tokenizer, photo_feature, max_length)
+    print("🖼️ Generated Caption:", caption)
+    print("-"*50)
+
+# -----------------------------
+# 5️⃣ Optional: Predict on entire test set (classification)
+# -----------------------------
+test_gen.reset()
+preds = transfer_model.predict(test_gen)
+pred_labels = np.argmax(preds, axis=1)
+true_labels = test_gen.classes
+pred_class_names = [class_names[i] for i in pred_labels]
+true_class_names = [class_names[i] for i in true_labels]
+
+# Show first 10 predictions
+print("\nSample Predictions on Test Set:")
+for i in range(10):
+    print(f"Image {i+1}: True={true_class_names[i]}, Predicted={pred_class_names[i]}")
