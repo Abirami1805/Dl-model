@@ -1,0 +1,96 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+import pickle
+import os
+
+# -----------------------------
+# 1️⃣ Load Models
+# -----------------------------
+transfer_model = load_model("/content/transfer_learning_model.h5")
+feature_model  = load_model("/content/feature_extraction_model.h5")
+caption_model  = load_model("/content/image_caption_generator_model.h5")
+
+# Load tokenizer for caption generator
+with open("/content/tokenizer.pkl", 'rb') as f:
+    tokenizer = pickle.load(f)
+
+# Max caption length (use same as training)
+max_length = 10  # replace with your value used during training
+
+# -----------------------------
+# 2️⃣ Helper Functions
+# -----------------------------
+# Display image
+def show_image(img_path):
+    img = load_img(img_path, target_size=(224, 224))
+    plt.imshow(img)
+    plt.axis('off')
+    plt.show()
+
+# Preprocess image for classification models
+def preprocess_image(img_path, target_size=(224,224)):
+    img = load_img(img_path, target_size=target_size)
+    img = img_to_array(img) / 255.0
+    img = np.expand_dims(img, axis=0)
+    return img
+
+# Generate caption function
+def generate_caption(model, tokenizer, photo, max_length):
+    in_text = 'startseq'
+    for i in range(max_length):
+        sequence = tokenizer.texts_to_sequences([in_text])[0]
+        sequence = pad_sequences([sequence], maxlen=max_length)
+        yhat = np.argmax(model.predict([photo, sequence], verbose=0))
+        word = None
+        for w, index in tokenizer.word_index.items():
+            if index == yhat:
+                word = w
+                break
+        if word is None:
+            break
+        in_text += ' ' + word
+        if word == 'endseq':
+            break
+    return in_text
+
+# -----------------------------
+# 3️⃣ Test on Images
+# -----------------------------
+test_dir = "/content/test_images"  # put some test images here
+test_images = os.listdir(test_dir)[:5]  # test first 5 images
+
+for img_name in test_images:
+    img_path = os.path.join(test_dir, img_name)
+    print("Image:", img_name)
+    show_image(img_path)
+    
+    # Transfer Learning Prediction
+    img = preprocess_image(img_path)
+    pred = transfer_model.predict(img)
+    pred_label = np.argmax(pred, axis=1)
+    print("🧠 Transfer Learning Prediction:", pred_label)
+    
+    # Feature Extraction Prediction
+    pred_feat = feature_model.predict(img)
+    pred_label_feat = np.argmax(pred_feat, axis=1)
+    print("🧩 Feature Extraction Prediction:", pred_label_feat)
+    
+    # Image Caption Generator Prediction
+    # Resize for InceptionV3 feature extractor if needed
+    from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input
+    from tensorflow.keras.models import Model
+    base_model = InceptionV3(weights='imagenet')
+    model_incep = Model(base_model.input, base_model.layers[-2].output)
+    
+    img_incep = load_img(img_path, target_size=(299,299))
+    img_incep = img_to_array(img_incep)
+    img_incep = np.expand_dims(img_incep, axis=0)
+    img_incep = preprocess_input(img_incep)
+    photo_feature = model_incep.predict(img_incep, verbose=0)
+    
+    caption = generate_caption(caption_model, tokenizer, photo_feature, max_length)
+    print("🖼️ Generated Caption:", caption)
+    print("-"*50)
